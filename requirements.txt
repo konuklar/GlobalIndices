@@ -1,0 +1,20 @@
+# 核心数据分析库
+pandas>=1.5.0
+numpy>=1.24.0
+
+# 金融数据获取
+yfinance>=0.2.18
+
+# 数据可视化
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# 数据处理和计算
+scipy>=1.10.0
+statsmodels>=0.14.0
+
+# 日期时间处理
+python-dateutil>=2.8.2
+
+# 可选：用于更美观的图表
+plotly>=5.13.0

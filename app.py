@@ -8,6 +8,9 @@ from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
 
+# 设置QuantStats配置
+qs.extend_pandas()
+
 # 设置页面配置
 st.set_page_config(
     page_title="QUANTEDGE - Advanced Quant Analysis",
@@ -194,9 +197,9 @@ def calculate_bollinger_bands(series, window=20, num_std=2):
     
     return rolling_mean, upper_band, lower_band
 
-# 使用QuantStats计算绩效指标
-def calculate_quantstats_metrics(prices, risk_free_rate=0.02):
-    """使用QuantStats计算绩效指标"""
+# 使用QuantStats计算绩效指标 - 修复版本
+def calculate_quantstats_metrics(prices, risk_free=0.02):
+    """使用QuantStats计算绩效指标 - 修复API参数问题"""
     metrics_dict = {}
     
     for idx_name in prices.columns:
@@ -210,18 +213,18 @@ def calculate_quantstats_metrics(prices, risk_free_rate=0.02):
             # 计算收益率
             returns = idx_prices.pct_change().dropna()
             
-            # 使用QuantStats计算指标
+            # 使用QuantStats计算指标 - 修复参数名称
             # 年化收益率
             cagr = qs.stats.cagr(returns) * 100
             
             # 年化波动率
             vol = qs.stats.volatility(returns) * 100
             
-            # 夏普比率
-            sharpe = qs.stats.sharpe(returns, risk_free=risk_free_rate)
+            # 夏普比率 - 使用正确的参数名 risk_free
+            sharpe = qs.stats.sharpe(returns, risk_free=risk_free)
             
-            # 索提诺比率
-            sortino = qs.stats.sortino(returns, risk_free=risk_free_rate)
+            # 索提诺比率 - 使用正确的参数名 risk_free
+            sortino = qs.stats.sortino(returns, risk_free=risk_free)
             
             # Calmar比率
             calmar = qs.stats.calmar(returns)
@@ -229,8 +232,8 @@ def calculate_quantstats_metrics(prices, risk_free_rate=0.02):
             # 最大回撤
             max_dd = qs.stats.max_drawdown(returns) * 100
             
-            # Omega比率
-            omega = qs.stats.omega(returns, risk_free=risk_free_rate)
+            # Omega比率 - 使用正确的参数名 risk_free
+            omega = qs.stats.omega(returns, risk_free=risk_free)
             
             # 偏度
             skew = qs.stats.skew(returns)
@@ -238,14 +241,25 @@ def calculate_quantstats_metrics(prices, risk_free_rate=0.02):
             # 峰度
             kurtosis = qs.stats.kurtosis(returns)
             
-            # 索提诺比率
-            sortino = qs.stats.sortino(returns, risk_free=risk_free_rate)
-            
             # VaR (95%)
             var_95 = qs.stats.value_at_risk(returns) * 100
             
             # CVaR (95%)
             cvar_95 = qs.stats.conditional_value_at_risk(returns) * 100
+            
+            # 日收益率偏度
+            daily_skew = returns.skew()
+            
+            # 日收益率峰度
+            daily_kurtosis = returns.kurtosis()
+            
+            # 赢率
+            win_rate = (returns > 0).mean() * 100
+            
+            # 平均收益/平均损失比率
+            avg_win = returns[returns > 0].mean() * 100 if len(returns[returns > 0]) > 0 else 0
+            avg_loss = returns[returns < 0].mean() * 100 if len(returns[returns < 0]) > 0 else 0
+            profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else np.nan
             
             metrics_dict[idx_name] = {
                 'CAGR (%)': cagr,
@@ -259,11 +273,16 @@ def calculate_quantstats_metrics(prices, risk_free_rate=0.02):
                 'Kurtosis': kurtosis,
                 'VaR 95% (%)': var_95,
                 'CVaR 95% (%)': cvar_95,
-                'Win Rate (%)': (returns > 0).mean() * 100
+                'Win Rate (%)': win_rate,
+                'Profit Factor': profit_factor,
+                'Avg Win (%)': avg_win,
+                'Avg Loss (%)': avg_loss,
+                'Daily Skew': daily_skew,
+                'Daily Kurtosis': daily_kurtosis
             }
             
         except Exception as e:
-            st.warning(f"Error calculating metrics for {idx_name}: {str(e)[:50]}")
+            st.warning(f"Error calculating metrics for {idx_name}: {str(e)[:100]}")
             continue
     
     return pd.DataFrame(metrics_dict).T
@@ -287,8 +306,11 @@ def plot_normalized_price_single(index_name, prices, ax):
     
     # 添加统计信息
     total_return = (normalized_prices.iloc[-1] - 100) / 100 * 100
-    ax.text(0.02, 0.98, f'Total Return: {total_return:.2f}%',
-            transform=ax.transAxes, verticalalignment='top',
+    days_held = (normalized_prices.index[-1] - normalized_prices.index[0]).days
+    annualized_return = ((1 + total_return/100) ** (365/days_held) - 1) * 100
+    
+    ax.text(0.02, 0.98, f'Total Return: {total_return:.2f}%\nAnnualized: {annualized_return:.2f}%',
+            transform=ax.transAxes, verticalalignment='top', fontsize=10,
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
 # 绘制单个指数的布林带对数收益率图表
@@ -321,18 +343,40 @@ def plot_bollinger_bands_log_returns_single(index_name, prices, ax, window=20, n
                     upper_band.values * 100, 
                     alpha=0.2, color='#3B82F6')
     
-    ax.set_title(f'{index_name} - Log Returns with Bollinger Bands', 
+    # 标记超出布林带的点
+    above_upper = log_returns > upper_band
+    below_lower = log_returns < lower_band
+    
+    if above_upper.any():
+        ax.scatter(log_returns[above_upper].index, 
+                  log_returns[above_upper].values * 100,
+                  color='#EF4444', s=30, label='Above Upper Band', zorder=5)
+    
+    if below_lower.any():
+        ax.scatter(log_returns[below_lower].index, 
+                  log_returns[below_lower].values * 100,
+                  color='#10B981', s=30, label='Below Lower Band', zorder=5)
+    
+    ax.set_title(f'{index_name} - Log Returns with Bollinger Bands ({window}d, {num_std}σ)', 
                  fontsize=14, fontweight='bold')
     ax.set_ylabel('Log Returns (%)', fontsize=12)
     ax.set_xlabel('Date', fontsize=12)
     ax.grid(True, alpha=0.3, linestyle='--')
-    ax.legend()
+    ax.legend(loc='upper left', fontsize=9)
     
     # 添加统计信息
     mean_return = log_returns.mean() * 100 * 252  # 年化
     std_return = log_returns.std() * 100 * np.sqrt(252)  # 年化
-    ax.text(0.02, 0.98, f'Ann. Return: {mean_return:.2f}%\nAnn. Vol: {std_return:.2f}%',
-            transform=ax.transAxes, verticalalignment='top',
+    
+    # 计算超出布林带的百分比
+    pct_above_upper = (above_upper.sum() / len(log_returns)) * 100
+    pct_below_lower = (below_lower.sum() / len(log_returns)) * 100
+    
+    stats_text = f'Ann. Return: {mean_return:.2f}%\nAnn. Vol: {std_return:.2f}%\n'
+    stats_text += f'Above Upper: {pct_above_upper:.1f}%\nBelow Lower: {pct_below_lower:.1f}%'
+    
+    ax.text(0.02, 0.98, stats_text,
+            transform=ax.transAxes, verticalalignment='top', fontsize=9,
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
 # 主应用逻辑
@@ -356,6 +400,10 @@ if analyze_button and selected_indices:
     # 计算QuantStats指标
     with st.spinner("📈 Calculating quantitative metrics..."):
         quant_metrics = calculate_quantstats_metrics(data_ffilled, risk_free_rate)
+    
+    if quant_metrics.empty:
+        st.error("❌ Could not calculate metrics. Please try different parameters.")
+        st.stop()
     
     # 存储到会话状态
     st.session_state.data = data_ffilled
@@ -387,14 +435,26 @@ with col4:
 st.markdown('<div class="sub-header">📈 Quantitative Performance Metrics</div>', unsafe_allow_html=True)
 
 # 排序选项
-sort_options = ['CAGR (%)', 'Sharpe Ratio', 'Sortino Ratio', 'Max Drawdown (%)', 'Volatility (%)']
+sort_options = ['CAGR (%)', 'Sharpe Ratio', 'Sortino Ratio', 'Max Drawdown (%)', 'Volatility (%)', 'Omega Ratio']
 sort_by = st.selectbox("Sort metrics by:", sort_options, index=0)
 
 if not quant_metrics.empty:
-    sorted_metrics = quant_metrics.sort_values(sort_by, ascending=False)
+    # 按选择排序（降序，除了最大回撤）
+    if sort_by == 'Max Drawdown (%)':
+        sorted_metrics = quant_metrics.sort_values(sort_by)
+    else:
+        sorted_metrics = quant_metrics.sort_values(sort_by, ascending=False)
     
     # 格式化显示
     display_df = sorted_metrics.copy()
+    
+    # 选择要显示的主要指标
+    main_metrics = ['CAGR (%)', 'Volatility (%)', 'Sharpe Ratio', 'Sortino Ratio', 
+                   'Max Drawdown (%)', 'Calmar Ratio', 'Omega Ratio', 'Win Rate (%)']
+    
+    # 只显示存在的指标
+    available_metrics = [m for m in main_metrics if m in display_df.columns]
+    display_df = display_df[available_metrics]
     
     # 格式化百分比列
     percent_cols = [col for col in display_df.columns if '%' in col]
@@ -404,12 +464,6 @@ if not quant_metrics.empty:
     # 格式化比率列
     ratio_cols = ['Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Omega Ratio']
     for col in ratio_cols:
-        if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:.3f}" if not pd.isna(x) else "N/A")
-    
-    # 格式化统计列
-    stat_cols = ['Skewness', 'Kurtosis']
-    for col in stat_cols:
         if col in display_df.columns:
             display_df[col] = display_df[col].apply(lambda x: f"{x:.3f}" if not pd.isna(x) else "N/A")
     
@@ -434,14 +488,14 @@ for i, (tab, index_name) in enumerate(zip(tabs, tab_names)):
         col_chart1, col_chart2 = st.columns(2)
         
         with col_chart1:
-            st.markdown("##### Normalized Price Chart")
+            st.markdown("##### 📈 Normalized Price Chart")
             fig1, ax1 = plt.subplots(figsize=(10, 6))
             plot_normalized_price_single(index_name, data_ffilled, ax1)
             st.pyplot(fig1)
             plt.close(fig1)
         
         with col_chart2:
-            st.markdown("##### Log Returns with Bollinger Bands")
+            st.markdown(f"##### 📊 Log Returns with Bollinger Bands ({bb_window}d, {bb_std}σ)")
             fig2, ax2 = plt.subplots(figsize=(10, 6))
             plot_bollinger_bands_log_returns_single(
                 index_name, data_ffilled, ax2, 
@@ -451,31 +505,83 @@ for i, (tab, index_name) in enumerate(zip(tabs, tab_names)):
             plt.close(fig2)
         
         # 显示该指数的详细指标
-        st.markdown("##### Detailed Performance Metrics")
+        st.markdown("##### 📋 Detailed Performance Metrics")
         if index_name in quant_metrics.index:
             index_metrics = quant_metrics.loc[index_name]
             
-            # 创建指标卡片
-            cols = st.columns(4)
-            metric_groups = [
-                ['CAGR (%)', 'Volatility (%)', 'Max Drawdown (%)'],
-                ['Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio'],
-                ['Omega Ratio', 'VaR 95% (%)', 'CVaR 95% (%)'],
-                ['Skewness', 'Kurtosis', 'Win Rate (%)']
-            ]
+            # 创建三列布局显示指标
+            col1, col2, col3 = st.columns(3)
             
-            for col, metrics in zip(cols, metric_groups):
-                for metric in metrics:
-                    if metric in index_metrics:
-                        value = index_metrics[metric]
-                        if '%' in metric:
+            # 第一列：收益指标
+            with col1:
+                metrics_group1 = {
+                    'CAGR (%)': 'Annual Return',
+                    'Volatility (%)': 'Annual Volatility',
+                    'Sharpe Ratio': 'Sharpe Ratio',
+                    'Sortino Ratio': 'Sortino Ratio'
+                }
+                
+                for metric_key, metric_label in metrics_group1.items():
+                    if metric_key in index_metrics:
+                        value = index_metrics[metric_key]
+                        if '%' in metric_key:
                             display_value = f"{value:.2f}%"
                         else:
                             display_value = f"{value:.3f}"
                         
-                        col.markdown(f"""
+                        st.markdown(f"""
                         <div class="metric-card">
-                            <strong>{metric}</strong><br>
+                            <strong>{metric_label}</strong><br>
+                            <span style="font-size: 1.2rem; color: #1E40AF;">{display_value}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+            
+            # 第二列：风险指标
+            with col2:
+                metrics_group2 = {
+                    'Max Drawdown (%)': 'Max Drawdown',
+                    'Calmar Ratio': 'Calmar Ratio',
+                    'VaR 95% (%)': 'VaR 95%',
+                    'CVaR 95% (%)': 'CVaR 95%'
+                }
+                
+                for metric_key, metric_label in metrics_group2.items():
+                    if metric_key in index_metrics:
+                        value = index_metrics[metric_key]
+                        if '%' in metric_key:
+                            display_value = f"{value:.2f}%"
+                        else:
+                            display_value = f"{value:.3f}"
+                        
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <strong>{metric_label}</strong><br>
+                            <span style="font-size: 1.2rem; color: #1E40AF;">{display_value}</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+            
+            # 第三列：统计指标
+            with col3:
+                metrics_group3 = {
+                    'Omega Ratio': 'Omega Ratio',
+                    'Win Rate (%)': 'Win Rate',
+                    'Profit Factor': 'Profit Factor',
+                    'Skewness': 'Skewness'
+                }
+                
+                for metric_key, metric_label in metrics_group3.items():
+                    if metric_key in index_metrics:
+                        value = index_metrics[metric_key]
+                        if '%' in metric_key:
+                            display_value = f"{value:.2f}%"
+                        elif metric_key == 'Profit Factor':
+                            display_value = f"{value:.2f}x"
+                        else:
+                            display_value = f"{value:.3f}"
+                        
+                        st.markdown(f"""
+                        <div class="metric-card">
+                            <strong>{metric_label}</strong><br>
                             <span style="font-size: 1.2rem; color: #1E40AF;">{display_value}</span>
                         </div>
                         """, unsafe_allow_html=True)

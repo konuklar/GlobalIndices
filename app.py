@@ -3,13 +3,9 @@ import pandas as pd
 import numpy as np
 import yfinance as yf
 import matplotlib.pyplot as plt
-import quantstats as qs
 from datetime import datetime, timedelta
 import warnings
 warnings.filterwarnings('ignore')
-
-# 设置QuantStats配置
-qs.extend_pandas()
 
 # 设置页面配置
 st.set_page_config(
@@ -43,13 +39,6 @@ st.markdown("""
         margin-bottom: 1rem;
         font-weight: 600;
     }
-    .index-card {
-        background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-        color: white;
-        padding: 1.5rem;
-        border-radius: 10px;
-        margin-bottom: 1rem;
-    }
     .metric-card {
         background-color: #F3F4F6;
         padding: 1rem;
@@ -62,6 +51,20 @@ st.markdown("""
         color: white;
         font-weight: bold;
         border: none;
+    }
+    .success-box {
+        background-color: #D1FAE5;
+        border-left: 4px solid #10B981;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
+    }
+    .warning-box {
+        background-color: #FEF3C7;
+        border-left: 4px solid #F59E0B;
+        padding: 1rem;
+        border-radius: 5px;
+        margin: 1rem 0;
     }
 </style>
 """, unsafe_allow_html=True)
@@ -96,17 +99,17 @@ with st.sidebar:
     bb_window = st.slider("Window Size (days)", 10, 100, 20)
     bb_std = st.slider("Standard Deviations", 1.0, 3.0, 2.0, 0.1)
     
-    # 指数选择
+    # 指数选择 - 使用正确的Yahoo Finance代码
     st.markdown("### 🌐 Select Indices")
     
-    # 预定义的指数列表
+    # 使用正确的Yahoo Finance代码
     all_indices = {
         '^HSI': 'Hang Seng',
         '^IXIC': 'Nasdaq',
         '^GSPC': 'S&P 500',
         '^RUT': 'US Russell 2000',
         '^BVSP': 'Bovespa',
-        'MSCIW.PA': "MSCI All-World",
+        'URTH': "MSCI World",  # iShares MSCI World ETF代替
         '^N225': "Nikkei 225",
         '^STOXX': 'STOXX 600',
         '^GDAXI': 'DAX',
@@ -116,9 +119,9 @@ with st.sidebar:
         '^SSMI': 'SWISS SMI',
         'XU100.IS': 'BIST 100',
         '^AXJO': 'S&P/ASX 200',
-        '000001.SS': 'Shanghai Index',
+        '000001.SS': 'Shanghai Composite',
         '399001.SZ': 'SZSE Component',
-        '^SSE50': 'China A50',
+        'CNYA': 'China A50 ETF',  # iShares China A ETF代替
         '^KS11': 'KOSPI',
         '^TWII': 'Taiwan Weighted',
         '^NSEI': 'NIFTY 50'
@@ -127,7 +130,7 @@ with st.sidebar:
     # 让用户选择要分析的指数
     selected_indices = {}
     for ticker, name in all_indices.items():
-        if st.checkbox(name, value=True):
+        if st.checkbox(f"{name} ({ticker})", value=True):
             selected_indices[ticker] = name
     
     if not selected_indices:
@@ -141,7 +144,7 @@ with st.sidebar:
     st.markdown("""
     ### 📚 About QUANTEDGE
     **Advanced quantitative analysis platform** 
-    for global financial indices using **QuantStats**.
+    for global financial indices.
     
     Features:
     • Individual index analysis
@@ -157,15 +160,20 @@ with st.sidebar:
 def fetch_index_data(tickers_dict, start_date, end_date):
     """获取多个指数的历史数据"""
     all_data = pd.DataFrame()
+    failed_tickers = []
     
-    progress_text = st.sidebar.empty()
+    progress_bar = st.sidebar.progress(0)
+    status_text = st.sidebar.empty()
+    
+    total_tickers = len(tickers_dict)
     
     for i, (ticker, name) in enumerate(tickers_dict.items()):
         try:
-            progress_text.text(f"📥 Downloading {name}...")
+            status_text.text(f"📥 Downloading {name}...")
             data = yf.download(ticker, start=start_date, end=end_date, progress=False)
             
             if not data.empty and len(data) > 10:
+                # 使用调整后的收盘价
                 if 'Adj Close' in data.columns:
                     price_series = data['Adj Close']
                 else:
@@ -174,11 +182,20 @@ def fetch_index_data(tickers_dict, start_date, end_date):
                 price_series.name = name
                 all_data = pd.concat([all_data, price_series], axis=1)
             else:
-                st.sidebar.warning(f"⚠️ Insufficient data for {name}")
+                failed_tickers.append((ticker, "Insufficient data"))
         except Exception as e:
-            st.sidebar.warning(f"⚠️ Error downloading {name}")
+            failed_tickers.append((ticker, str(e)[:50]))
+        
+        progress_bar.progress((i + 1) / total_tickers)
     
-    progress_text.empty()
+    progress_bar.empty()
+    status_text.empty()
+    
+    if failed_tickers:
+        with st.sidebar.expander("⚠️ Failed Downloads", expanded=False):
+            for ticker, error in failed_tickers:
+                st.write(f"{ticker}: {error}")
+    
     return all_data
 
 # 计算对数收益率
@@ -197,14 +214,14 @@ def calculate_bollinger_bands(series, window=20, num_std=2):
     
     return rolling_mean, upper_band, lower_band
 
-# 使用QuantStats计算绩效指标 - 修复版本
-def calculate_quantstats_metrics(prices, risk_free=0.02):
-    """使用QuantStats计算绩效指标 - 修复API参数问题"""
+# 手动计算绩效指标（不使用QuantStats以避免API问题）
+def calculate_performance_metrics(prices, risk_free_rate=0.02):
+    """手动计算绩效指标"""
     metrics_dict = {}
     
     for idx_name in prices.columns:
         try:
-            # 获取价格序列
+            # 获取该指数的价格和收益率
             idx_prices = prices[idx_name].dropna()
             
             if len(idx_prices) < 50:  # 数据太少
@@ -212,73 +229,94 @@ def calculate_quantstats_metrics(prices, risk_free=0.02):
             
             # 计算收益率
             returns = idx_prices.pct_change().dropna()
+            log_returns = np.log(idx_prices / idx_prices.shift(1)).dropna()
             
-            # 使用QuantStats计算指标 - 修复参数名称
-            # 年化收益率
-            cagr = qs.stats.cagr(returns) * 100
+            # 基本参数
+            trading_days = 252
+            years = len(idx_prices) / trading_days
+            
+            # 总收益率
+            total_return = (idx_prices.iloc[-1] / idx_prices.iloc[0] - 1) * 100
+            
+            # 年化收益率 (CAGR)
+            cagr = ((1 + total_return/100) ** (1/years) - 1) * 100
             
             # 年化波动率
-            vol = qs.stats.volatility(returns) * 100
+            annual_volatility = returns.std() * np.sqrt(trading_days) * 100
             
-            # 夏普比率 - 使用正确的参数名 risk_free
-            sharpe = qs.stats.sharpe(returns, risk_free=risk_free)
-            
-            # 索提诺比率 - 使用正确的参数名 risk_free
-            sortino = qs.stats.sortino(returns, risk_free=risk_free)
-            
-            # Calmar比率
-            calmar = qs.stats.calmar(returns)
+            # 夏普比率
+            if annual_volatility > 0:
+                sharpe_ratio = (cagr - risk_free_rate * 100) / annual_volatility
+            else:
+                sharpe_ratio = np.nan
             
             # 最大回撤
-            max_dd = qs.stats.max_drawdown(returns) * 100
+            cumulative = (1 + returns).cumprod()
+            running_max = cumulative.expanding().max()
+            drawdown = (cumulative / running_max - 1) * 100
+            max_drawdown = drawdown.min()
             
-            # Omega比率 - 使用正确的参数名 risk_free
-            omega = qs.stats.omega(returns, risk_free=risk_free)
+            # 索提诺比率
+            negative_returns = returns[returns < 0]
+            if len(negative_returns) > 0:
+                downside_std = negative_returns.std() * np.sqrt(trading_days) * 100
+                if downside_std > 0:
+                    sortino_ratio = (cagr - risk_free_rate * 100) / downside_std
+                else:
+                    sortino_ratio = np.nan
+            else:
+                sortino_ratio = np.nan
+            
+            # Calmar比率
+            if max_drawdown != 0:
+                calmar_ratio = (cagr - risk_free_rate * 100) / abs(max_drawdown)
+            else:
+                calmar_ratio = np.nan
+            
+            # Omega比率 (近似计算)
+            threshold = risk_free_rate / trading_days  # 日无风险利率
+            excess_returns = returns - threshold
+            positive_excess = excess_returns[excess_returns > 0].sum()
+            negative_excess = abs(excess_returns[excess_returns < 0].sum())
+            omega_ratio = positive_excess / negative_excess if negative_excess > 0 else np.nan
             
             # 偏度
-            skew = qs.stats.skew(returns)
+            skewness = returns.skew()
             
             # 峰度
-            kurtosis = qs.stats.kurtosis(returns)
+            kurtosis = returns.kurtosis()
             
             # VaR (95%)
-            var_95 = qs.stats.value_at_risk(returns) * 100
+            var_95 = np.percentile(returns, 5) * 100
             
             # CVaR (95%)
-            cvar_95 = qs.stats.conditional_value_at_risk(returns) * 100
-            
-            # 日收益率偏度
-            daily_skew = returns.skew()
-            
-            # 日收益率峰度
-            daily_kurtosis = returns.kurtosis()
+            cvar_95 = returns[returns <= np.percentile(returns, 5)].mean() * 100
             
             # 赢率
             win_rate = (returns > 0).mean() * 100
             
-            # 平均收益/平均损失比率
+            # 平均收益/平均损失
             avg_win = returns[returns > 0].mean() * 100 if len(returns[returns > 0]) > 0 else 0
             avg_loss = returns[returns < 0].mean() * 100 if len(returns[returns < 0]) > 0 else 0
             profit_factor = abs(avg_win / avg_loss) if avg_loss != 0 else np.nan
             
             metrics_dict[idx_name] = {
+                'Total Return (%)': total_return,
                 'CAGR (%)': cagr,
-                'Volatility (%)': vol,
-                'Sharpe Ratio': sharpe,
-                'Sortino Ratio': sortino,
-                'Calmar Ratio': calmar,
-                'Max Drawdown (%)': max_dd,
-                'Omega Ratio': omega,
-                'Skewness': skew,
+                'Volatility (%)': annual_volatility,
+                'Sharpe Ratio': sharpe_ratio,
+                'Sortino Ratio': sortino_ratio,
+                'Calmar Ratio': calmar_ratio,
+                'Max Drawdown (%)': max_drawdown,
+                'Omega Ratio': omega_ratio,
+                'Skewness': skewness,
                 'Kurtosis': kurtosis,
                 'VaR 95% (%)': var_95,
                 'CVaR 95% (%)': cvar_95,
                 'Win Rate (%)': win_rate,
                 'Profit Factor': profit_factor,
                 'Avg Win (%)': avg_win,
-                'Avg Loss (%)': avg_loss,
-                'Daily Skew': daily_skew,
-                'Daily Kurtosis': daily_kurtosis
+                'Avg Loss (%)': avg_loss
             }
             
         except Exception as e:
@@ -307,9 +345,13 @@ def plot_normalized_price_single(index_name, prices, ax):
     # 添加统计信息
     total_return = (normalized_prices.iloc[-1] - 100) / 100 * 100
     days_held = (normalized_prices.index[-1] - normalized_prices.index[0]).days
-    annualized_return = ((1 + total_return/100) ** (365/days_held) - 1) * 100
+    if days_held > 0:
+        annualized_return = ((1 + total_return/100) ** (365/days_held) - 1) * 100
+        stats_text = f'Total Return: {total_return:.2f}%\nAnnualized: {annualized_return:.2f}%'
+    else:
+        stats_text = f'Total Return: {total_return:.2f}%'
     
-    ax.text(0.02, 0.98, f'Total Return: {total_return:.2f}%\nAnnualized: {annualized_return:.2f}%',
+    ax.text(0.02, 0.98, stats_text,
             transform=ax.transAxes, verticalalignment='top', fontsize=10,
             bbox=dict(boxstyle='round', facecolor='white', alpha=0.8))
 
@@ -369,8 +411,8 @@ def plot_bollinger_bands_log_returns_single(index_name, prices, ax, window=20, n
     std_return = log_returns.std() * 100 * np.sqrt(252)  # 年化
     
     # 计算超出布林带的百分比
-    pct_above_upper = (above_upper.sum() / len(log_returns)) * 100
-    pct_below_lower = (below_lower.sum() / len(log_returns)) * 100
+    pct_above_upper = (above_upper.sum() / len(log_returns)) * 100 if len(log_returns) > 0 else 0
+    pct_below_lower = (below_lower.sum() / len(log_returns)) * 100 if len(log_returns) > 0 else 0
     
     stats_text = f'Ann. Return: {mean_return:.2f}%\nAnn. Vol: {std_return:.2f}%\n'
     stats_text += f'Above Upper: {pct_above_upper:.1f}%\nBelow Lower: {pct_below_lower:.1f}%'
@@ -397,22 +439,22 @@ if analyze_button and selected_indices:
         st.error("❌ No valid data after processing.")
         st.stop()
     
-    # 计算QuantStats指标
+    # 计算指标
     with st.spinner("📈 Calculating quantitative metrics..."):
-        quant_metrics = calculate_quantstats_metrics(data_ffilled, risk_free_rate)
+        metrics_df = calculate_performance_metrics(data_ffilled, risk_free_rate)
     
-    if quant_metrics.empty:
+    if metrics_df.empty:
         st.error("❌ Could not calculate metrics. Please try different parameters.")
         st.stop()
     
     # 存储到会话状态
     st.session_state.data = data_ffilled
-    st.session_state.metrics = quant_metrics
+    st.session_state.metrics = metrics_df
     st.session_state.bb_params = {'window': bb_window, 'std': bb_std}
     
 elif 'data' in st.session_state:
     data_ffilled = st.session_state.data
-    quant_metrics = st.session_state.metrics
+    metrics_df = st.session_state.metrics
     bb_params = st.session_state.bb_params
 else:
     st.info("👈 Configure your analysis in the sidebar and click 'Run Quantitative Analysis'")
@@ -431,43 +473,40 @@ with col3:
 with col4:
     st.metric("Risk-Free Rate", f"{risk_free_rate*100:.1f}%")
 
-# 显示QuantStats绩效指标
-st.markdown('<div class="sub-header">📈 Quantitative Performance Metrics</div>', unsafe_allow_html=True)
+# 显示成功信息
+st.markdown(f"""
+<div class="success-box">
+✅ Successfully analyzed {len(data_ffilled.columns)} indices with {len(data_ffilled)} trading days of data.
+</div>
+""", unsafe_allow_html=True)
+
+# 显示绩效指标
+st.markdown('<div class="sub-header">📈 Performance Metrics</div>', unsafe_allow_html=True)
 
 # 排序选项
 sort_options = ['CAGR (%)', 'Sharpe Ratio', 'Sortino Ratio', 'Max Drawdown (%)', 'Volatility (%)', 'Omega Ratio']
 sort_by = st.selectbox("Sort metrics by:", sort_options, index=0)
 
-if not quant_metrics.empty:
+if not metrics_df.empty:
     # 按选择排序（降序，除了最大回撤）
     if sort_by == 'Max Drawdown (%)':
-        sorted_metrics = quant_metrics.sort_values(sort_by)
+        sorted_metrics = metrics_df.sort_values(sort_by)
     else:
-        sorted_metrics = quant_metrics.sort_values(sort_by, ascending=False)
-    
-    # 格式化显示
-    display_df = sorted_metrics.copy()
+        sorted_metrics = metrics_df.sort_values(sort_by, ascending=False)
     
     # 选择要显示的主要指标
-    main_metrics = ['CAGR (%)', 'Volatility (%)', 'Sharpe Ratio', 'Sortino Ratio', 
-                   'Max Drawdown (%)', 'Calmar Ratio', 'Omega Ratio', 'Win Rate (%)']
+    display_metrics = sorted_metrics[['CAGR (%)', 'Volatility (%)', 'Sharpe Ratio', 
+                                     'Sortino Ratio', 'Max Drawdown (%)', 'Calmar Ratio',
+                                     'Win Rate (%)']].copy()
     
-    # 只显示存在的指标
-    available_metrics = [m for m in main_metrics if m in display_df.columns]
-    display_df = display_df[available_metrics]
+    # 格式化显示
+    for col in display_metrics.columns:
+        if '%' in col:
+            display_metrics[col] = display_metrics[col].apply(lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/A")
+        else:
+            display_metrics[col] = display_metrics[col].apply(lambda x: f"{x:.3f}" if not pd.isna(x) else "N/A")
     
-    # 格式化百分比列
-    percent_cols = [col for col in display_df.columns if '%' in col]
-    for col in percent_cols:
-        display_df[col] = display_df[col].apply(lambda x: f"{x:.2f}%" if not pd.isna(x) else "N/A")
-    
-    # 格式化比率列
-    ratio_cols = ['Sharpe Ratio', 'Sortino Ratio', 'Calmar Ratio', 'Omega Ratio']
-    for col in ratio_cols:
-        if col in display_df.columns:
-            display_df[col] = display_df[col].apply(lambda x: f"{x:.3f}" if not pd.isna(x) else "N/A")
-    
-    st.dataframe(display_df, use_container_width=True)
+    st.dataframe(display_metrics, use_container_width=True)
 
 # 单独显示每个指数的图表
 st.markdown('<div class="sub-header">📊 Individual Index Analysis</div>', unsafe_allow_html=True)
@@ -506,8 +545,8 @@ for i, (tab, index_name) in enumerate(zip(tabs, tab_names)):
         
         # 显示该指数的详细指标
         st.markdown("##### 📋 Detailed Performance Metrics")
-        if index_name in quant_metrics.index:
-            index_metrics = quant_metrics.loc[index_name]
+        if index_name in metrics_df.index:
+            index_metrics = metrics_df.loc[index_name]
             
             # 创建三列布局显示指标
             col1, col2, col3 = st.columns(3)
@@ -515,10 +554,10 @@ for i, (tab, index_name) in enumerate(zip(tabs, tab_names)):
             # 第一列：收益指标
             with col1:
                 metrics_group1 = {
+                    'Total Return (%)': 'Total Return',
                     'CAGR (%)': 'Annual Return',
                     'Volatility (%)': 'Annual Volatility',
-                    'Sharpe Ratio': 'Sharpe Ratio',
-                    'Sortino Ratio': 'Sortino Ratio'
+                    'Sharpe Ratio': 'Sharpe Ratio'
                 }
                 
                 for metric_key, metric_label in metrics_group1.items():
@@ -539,10 +578,10 @@ for i, (tab, index_name) in enumerate(zip(tabs, tab_names)):
             # 第二列：风险指标
             with col2:
                 metrics_group2 = {
+                    'Sortino Ratio': 'Sortino Ratio',
                     'Max Drawdown (%)': 'Max Drawdown',
                     'Calmar Ratio': 'Calmar Ratio',
-                    'VaR 95% (%)': 'VaR 95%',
-                    'CVaR 95% (%)': 'CVaR 95%'
+                    'VaR 95% (%)': 'VaR 95%'
                 }
                 
                 for metric_key, metric_label in metrics_group2.items():
@@ -575,9 +614,9 @@ for i, (tab, index_name) in enumerate(zip(tabs, tab_names)):
                         if '%' in metric_key:
                             display_value = f"{value:.2f}%"
                         elif metric_key == 'Profit Factor':
-                            display_value = f"{value:.2f}x"
+                            display_value = f"{value:.2f}x" if not pd.isna(value) else "N/A"
                         else:
-                            display_value = f"{value:.3f}"
+                            display_value = f"{value:.3f}" if not pd.isna(value) else "N/A"
                         
                         st.markdown(f"""
                         <div class="metric-card">
@@ -589,14 +628,14 @@ for i, (tab, index_name) in enumerate(zip(tabs, tab_names)):
 # 风险回报分析
 st.markdown('<div class="sub-header">🎯 Risk-Return Analysis</div>', unsafe_allow_html=True)
 
-if not quant_metrics.empty:
+if not metrics_df.empty:
     fig3, ax3 = plt.subplots(figsize=(12, 8))
     
     # 创建散点图
     scatter = ax3.scatter(
-        quant_metrics['Volatility (%)'], 
-        quant_metrics['CAGR (%)'],
-        c=quant_metrics['Sharpe Ratio'], 
+        metrics_df['Volatility (%)'], 
+        metrics_df['CAGR (%)'],
+        c=metrics_df['Sharpe Ratio'], 
         s=200, 
         cmap='RdYlGn', 
         alpha=0.7,
@@ -605,14 +644,15 @@ if not quant_metrics.empty:
     )
     
     # 添加指数标签
-    for idx in quant_metrics.index:
-        ax3.annotate(idx, 
-                    (quant_metrics.loc[idx, 'Volatility (%)'], 
-                     quant_metrics.loc[idx, 'CAGR (%)']),
-                    xytext=(5, 5), 
-                    textcoords='offset points',
-                    fontsize=9,
-                    alpha=0.8)
+    for idx in metrics_df.index:
+        if pd.notna(metrics_df.loc[idx, 'Volatility (%)']) and pd.notna(metrics_df.loc[idx, 'CAGR (%)']):
+            ax3.annotate(idx, 
+                        (metrics_df.loc[idx, 'Volatility (%)'], 
+                         metrics_df.loc[idx, 'CAGR (%)']),
+                        xytext=(5, 5), 
+                        textcoords='offset points',
+                        fontsize=9,
+                        alpha=0.8)
     
     ax3.set_xlabel('Annual Volatility (%)', fontsize=12)
     ax3.set_ylabel('CAGR (%)', fontsize=12)
@@ -630,51 +670,55 @@ if not quant_metrics.empty:
 # 回撤分析
 st.markdown('<div class="sub-header">📉 Maximum Drawdown Analysis</div>', unsafe_allow_html=True)
 
-if not quant_metrics.empty:
+if not metrics_df.empty:
     fig4, (ax4_1, ax4_2) = plt.subplots(1, 2, figsize=(16, 6))
     
     # 最大回撤条形图
-    max_dd_sorted = quant_metrics['Max Drawdown (%)'].sort_values()
-    colors_dd = plt.cm.RdYlGn_r(
-        (max_dd_sorted - max_dd_sorted.min()) / 
-        (max_dd_sorted.max() - max_dd_sorted.min() + 1e-10)
-    )
-    
-    ax4_1.barh(range(len(max_dd_sorted)), max_dd_sorted.values, color=colors_dd)
-    ax4_1.set_yticks(range(len(max_dd_sorted)))
-    ax4_1.set_yticklabels(max_dd_sorted.index, fontsize=10)
-    ax4_1.set_xlabel('Maximum Drawdown (%)', fontsize=12)
-    ax4_1.set_title('Maximum Drawdown by Index', fontsize=14, fontweight='bold')
-    ax4_1.grid(True, alpha=0.3, axis='x')
+    max_dd_data = metrics_df['Max Drawdown (%)'].dropna()
+    if len(max_dd_data) > 0:
+        max_dd_sorted = max_dd_data.sort_values()
+        colors_dd = plt.cm.RdYlGn_r(
+            (max_dd_sorted - max_dd_sorted.min()) / 
+            (max_dd_sorted.max() - max_dd_sorted.min() + 1e-10)
+        )
+        
+        ax4_1.barh(range(len(max_dd_sorted)), max_dd_sorted.values, color=colors_dd)
+        ax4_1.set_yticks(range(len(max_dd_sorted)))
+        ax4_1.set_yticklabels(max_dd_sorted.index, fontsize=10)
+        ax4_1.set_xlabel('Maximum Drawdown (%)', fontsize=12)
+        ax4_1.set_title('Maximum Drawdown by Index', fontsize=14, fontweight='bold')
+        ax4_1.grid(True, alpha=0.3, axis='x')
     
     # 回撤 vs 收益散点图
-    scatter_dd = ax4_2.scatter(
-        quant_metrics['Max Drawdown (%)'].abs(),
-        quant_metrics['CAGR (%)'],
-        c=quant_metrics['Calmar Ratio'],
-        s=150,
-        cmap='RdYlGn',
-        alpha=0.7,
-        edgecolors='black',
-        linewidth=0.5
-    )
-    
-    for idx in quant_metrics.index:
-        ax4_2.annotate(idx,
-                      (abs(quant_metrics.loc[idx, 'Max Drawdown (%)']),
-                       quant_metrics.loc[idx, 'CAGR (%)']),
-                      xytext=(5, 5),
-                      textcoords='offset points',
-                      fontsize=9,
-                      alpha=0.8)
-    
-    ax4_2.set_xlabel('Maximum Drawdown (%)', fontsize=12)
-    ax4_2.set_ylabel('CAGR (%)', fontsize=12)
-    ax4_2.set_title('Return vs Drawdown (Color = Calmar Ratio)', 
-                    fontsize=14, fontweight='bold')
-    ax4_2.grid(True, alpha=0.3, linestyle='--')
-    
-    plt.colorbar(scatter_dd, ax=ax4_2, label='Calmar Ratio')
+    valid_data = metrics_df.dropna(subset=['Max Drawdown (%)', 'CAGR (%)'])
+    if len(valid_data) > 0:
+        scatter_dd = ax4_2.scatter(
+            valid_data['Max Drawdown (%)'].abs(),
+            valid_data['CAGR (%)'],
+            c=valid_data['Calmar Ratio'],
+            s=150,
+            cmap='RdYlGn',
+            alpha=0.7,
+            edgecolors='black',
+            linewidth=0.5
+        )
+        
+        for idx in valid_data.index:
+            ax4_2.annotate(idx,
+                          (abs(valid_data.loc[idx, 'Max Drawdown (%)']),
+                           valid_data.loc[idx, 'CAGR (%)']),
+                          xytext=(5, 5),
+                          textcoords='offset points',
+                          fontsize=9,
+                          alpha=0.8)
+        
+        ax4_2.set_xlabel('Maximum Drawdown (%)', fontsize=12)
+        ax4_2.set_ylabel('CAGR (%)', fontsize=12)
+        ax4_2.set_title('Return vs Drawdown (Color = Calmar Ratio)', 
+                        fontsize=14, fontweight='bold')
+        ax4_2.grid(True, alpha=0.3, linestyle='--')
+        
+        plt.colorbar(scatter_dd, ax=ax4_2, label='Calmar Ratio')
     
     st.pyplot(fig4)
     plt.close(fig4)
@@ -685,7 +729,7 @@ st.markdown('<div class="sub-header">💾 Download Analysis Results</div>', unsa
 col1, col2, col3 = st.columns(3)
 
 with col1:
-    metrics_csv = quant_metrics.to_csv().encode('utf-8')
+    metrics_csv = metrics_df.to_csv().encode('utf-8')
     st.download_button(
         label="📥 Download All Metrics",
         data=metrics_csv,
@@ -721,7 +765,7 @@ st.markdown("---")
 st.markdown("""
 <div style='text-align: center; color: #6B7280; padding: 1rem;'>
     <p style='font-size: 1.1rem; font-weight: bold;'>QUANTEDGE Advanced Quantitative Analysis</p>
-    <p>Powered by QuantStats | Data from Yahoo Finance</p>
+    <p>Data from Yahoo Finance | All calculations performed internally</p>
     <p>Developed by LabGen25 | {}</p>
 </div>
 """.format(datetime.now().strftime("%Y-%m-%d %H:%M:%S")), unsafe_allow_html=True)
